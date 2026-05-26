@@ -6,13 +6,14 @@ export default function Home() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [accessToken, setAccessToken] = useState('');
+  const [sessionCookies, setSessionCookies] = useState('');
   
   const [loading, setLoading] = useState(false);
   const [logOutput, setLogOutput] = useState<string>('System ready. Waiting for authentication...');
 
   const appendLog = (title: string, data: any) => {
     const formattedData = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-    setLogOutput(`=== ${title} ===\n${formattedData}\n`);
+    setLogOutput(prev => `=== ${title} ===\n${formattedData}\n\n${prev}`);
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -34,7 +35,8 @@ export default function Home() {
       }
 
       setAccessToken(data.accessToken);
-      appendLog('AUTH SUCCESS', `JWT Acquired for ${username}.\nToken Prefix: ${data.accessToken.substring(0, 20)}...`);
+      setSessionCookies(data.sessionCookies || '');
+      appendLog('AUTH SUCCESS', `JWT Acquired for ${username}.\nToken Prefix: ${data.accessToken.substring(0, 20)}...\nCookies Captured: ${data.sessionCookies ? 'YES' : 'NO'}`);
     } catch (err: any) {
       appendLog('AUTH ERROR', err.message);
     } finally {
@@ -44,13 +46,13 @@ export default function Home() {
 
   const executeProbe = async (endpoint: string, method: string = 'GET') => {
     setLoading(true);
-    setLogOutput(`Probing API Endpoint: ${method} ${endpoint}\nPlease wait...`);
+    appendLog(`PROBING API`, `Endpoint: ${method} ${endpoint}\nPlease wait...`);
 
     try {
       const res = await fetch('/api/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoint, method, accessToken })
+        body: JSON.stringify({ endpoint, method, accessToken, sessionCookies })
       });
       
       const json = await res.json();
@@ -59,7 +61,7 @@ export default function Home() {
         throw new Error(json.error || `Proxy failed to fetch ${endpoint}`);
       }
       
-      appendLog(`RESPONSE: ${endpoint}`, json.data);
+      appendLog(`RESPONSE: ${endpoint}`, json);
     } catch (err: any) {
       appendLog(`FETCH ERROR: ${endpoint}`, err.message);
     } finally {
@@ -76,7 +78,7 @@ export default function Home() {
         <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
           <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #334155', paddingBottom: '1rem', marginBottom: '2rem' }}>
             <h1 style={{ margin: 0, fontSize: '1.5rem', color: '#38bdf8' }}>PSG API Diagnostic Probe</h1>
-            <button onClick={() => setAccessToken('')} style={{ background: 'transparent', color: '#f87171', border: '1px solid #f87171', padding: '0.5rem 1rem', cursor: 'pointer' }}>Disconnect</button>
+            <button onClick={() => { setAccessToken(''); setSessionCookies(''); }} style={{ background: 'transparent', color: '#f87171', border: '1px solid #f87171', padding: '0.5rem 1rem', cursor: 'pointer' }}>Disconnect</button>
           </header>
 
           <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
