@@ -1,145 +1,95 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 export const runtime = 'edge';
 
-export async function POST(request: NextRequest) {
+export async function POST(request: Request) {
+    console.log('[Universal Proxy] Request received');
     try {
-        const body = await request.json();
-        const username = body.username;
-        const password = body.password;
+        const reqBody = await request.json();
+        // strategy options: 'control', 'headers', 'headers-cookies'
+        const { endpoint, method = 'GET', body, accessToken, sessionCookies, strategy = 'headers-cookies' } = reqBody;
 
-        if (!username || !password) {
-            return NextResponse.json({ error: 'Username and password are required' }, { status: 400 });
+        if (!endpoint || !accessToken) {
+            return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
         }
 
-        console.log(`[Auth API - Step 1] Initiating login for user: ${username}`);
+        // Failsafe: Prevent browser and Edge caching by adding a random query parameter
+        const cacheBuster = `_cb=${Date.now()}`;
+        const finalEndpoint = endpoint.includes('?') ? `${endpoint}&${cacheBuster}` : `${endpoint}?${cacheBuster}`;
 
-        // Step 1: Initial Keycloak request
-        const redirectUri = "https://laudea.psgcas.ac.in/";
-        const loginUrl = `https://accounts.psgcas.ac.in/realms/ies/protocol/openid-connect/auth?client_id=laudea&redirect_uri=${encodeURIComponent(redirectUri)}&response_mode=fragment&response_type=code&scope=openid`;
+        const baseUrl = 'https://laudea.psgcas.ac.in';
+        const targetUrl = finalEndpoint.startsWith('/') ? `${baseUrl}${finalEndpoint}` : `${baseUrl}/${finalEndpoint}`;
         
-        console.log('[Auth API - Step 2] Fetching initial Keycloak login page...');
-        const initialRes = await fetch(loginUrl, { 
-            method: 'GET',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Cache-Control': 'no-cache, no-store' // Failsafe: Bypass Edge Cache
-            }
-        });
-        
-        const initialCookies = initialRes.headers.get('set-cookie') || '';
-        const html = await initialRes.text();
+        console.log(`[Proxy] Target: ${targetUrl} | Strategy: ${strategy}`);
 
-        // Step 2: Scrape dynamic form action
-        const actionMatch = html.match(/action="(https:\/\/accounts\.psgcas\.ac\.in\/realms\/ies\/login-actions\/authenticate[^"]+)"/);
-        if (!actionMatch) {
-            console.error('[Auth API - Error] Failed to find form action URL. Page might be cached or layout changed.');
-            return NextResponse.json({ error: 'Failed to parse login page' }, { status: 500 });
-        }
-        
-        const postUrl = actionMatch[1].replace(/&amp;/g, '&');
-        
-        const formData = new URLSearchParams();
-        formData.append('username', username);
-        formData.append('password', password);
-        formData.append('login', 'Log in');
-
-        // Step 3: Submit credentials
-        console.log('[Auth API - Step 3] Sending POST request with credentials...');
-        const authRes = await fetch(postUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Cookie': initialCookies,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Origin': 'https://accounts.psgcas.ac.in',
-                'Referer': loginUrl
-            },
-            body: formData.toString(),
-            redirect: 'manual' 
+        // Base Headers
+        const headers = new Headers({
+            'Authorization': `Bearer ${accessToken}`,
+            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache'
         });
 
-        if (authRes.status !== 302 && authRes.status !== 303) {
-            console.error(`[Auth API - Error] Login failed. Status: ${authRes.status}`);
-            return NextResponse.json({ error: 'Invalid credentials or login failed' }, { status: 401 });
+        if (method !== 'GET' && method !== 'HEAD') {
+            headers.set('Content-Type', 'application/json');
         }
 
-        const location = authRes.headers.get('location') || '';
-        const authCookies = authRes.headers.get('set-cookie') || '';
-        console.log('[Auth API - Step 4] Intercepted OIDC Redirect.');
-
-        // Step 4: Extract the 'code'
-        const codeMatch = location.match(/[#&?]code=([^&]+)/);
-        if (!codeMatch) {
-            console.error('[Auth API - Error] No OIDC code found in redirect location.');
-            return NextResponse.json({ error: 'OIDC flow failed: Missing code' }, { status: 500 });
-        }
-        const oidcCode = codeMatch[1];
-        
-        // Step 5: Primary Token Exchange (Laudea)
-        console.log('[Auth API - Step 5] Exchanging Code for Primary Token (laudea)...');
-        const tokenUrl = "https://accounts.psgcas.ac.in/realms/ies/protocol/openid-connect/token";
-        
-        const tokenFormData = new URLSearchParams();
-        tokenFormData.append('grant_type', 'authorization_code');
-        tokenFormData.append('client_id', 'laudea');
-        tokenFormData.append('redirect_uri', redirectUri);
-        tokenFormData.append('code', oidcCode);
-
-        const tokenRes = await fetch(tokenUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Cookie': authCookies || initialCookies,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            },
-            body: tokenFormData.toString()
-        });
-
-        if (!tokenRes.ok) {
-            return NextResponse.json({ error: 'Failed to exchange primary token' }, { status: 502 });
+        // Apply selected Strategy (Matrix Testing)
+        if (strategy === 'headers' || strategy === 'headers-cookies') {
+            headers.set('Origin', 'https://laudea.psgcas.ac.in');
+            headers.set('Referer', 'https://laudea.psgcas.ac.in/sis/');
+            headers.set('X-Requested-With', 'XMLHttpRequest');
+            headers.set('Sec-Fetch-Site', 'same-origin');
+            headers.set('Sec-Fetch-Mode', 'cors');
+            headers.set('Sec-Fetch-Dest', 'empty');
         }
 
-        const primaryTokenData = await tokenRes.json();
-        
-        // Step 6: Secondary Token Exchange (IES_SIS) via Refresh Flow - THIS TESTS HYPOTHESIS C
-        console.log('[Auth API - Step 6] Swapping Refresh Token for SIS Token (ies_sis)...');
-        const sisFormData = new URLSearchParams();
-        sisFormData.append('grant_type', 'refresh_token');
-        sisFormData.append('client_id', 'ies_sis');
-        sisFormData.append('refresh_token', primaryTokenData.refresh_token);
+        if (strategy === 'headers-cookies' && sessionCookies) {
+            headers.set('Cookie', sessionCookies);
+        }
 
-        let sisTokenData = null;
+        // Failsafe: Explicit Timeout Handling (8 seconds) to prevent infinite Vercel hangs
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+        const fetchOptions: RequestInit = {
+            method,
+            headers,
+            redirect: 'manual',
+            signal: controller.signal
+        };
+
+        if (method !== 'GET' && method !== 'HEAD' && body) {
+            fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
+        }
+
+        console.log(`[Proxy] Firing Request...`);
+        const response = await fetch(targetUrl, fetchOptions);
+        clearTimeout(timeoutId); // Clear timeout on success
+
+        console.log(`[Proxy] Target Status: ${response.status}`);
+
+        const responseText = await response.text();
+        let responseData;
         try {
-            const sisRes = await fetch(tokenUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Cookie': authCookies || initialCookies,
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                },
-                body: sisFormData.toString()
-            });
-            if (sisRes.ok) {
-                sisTokenData = await sisRes.json();
-                console.log('[Auth API - Step 6] Successfully acquired SIS Token.');
-            } else {
-                console.warn('[Auth API - Step 6] Failed to acquire SIS Token, proceeding with Laudea token only.');
-            }
+            responseData = JSON.parse(responseText);
         } catch (e) {
-            console.warn('[Auth API - Error] SIS token swap threw an exception.');
+            responseData = responseText; // Handle non-JSON gracefully
         }
 
-        return NextResponse.json({ 
-            success: true, 
-            laudeaToken: primaryTokenData.access_token,
-            sisToken: sisTokenData ? sisTokenData.access_token : null,
-            sessionCookies: authCookies || initialCookies
-        }, { status: 200 });
+        return NextResponse.json({
+            status: response.status,
+            data: responseData
+        });
 
-    } catch (error) {
-        console.error('[Auth API - Fatal Error]', error);
-        return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    } catch (error: any) {
+        if (error.name === 'AbortError') {
+            console.log('[Proxy Error] Request timed out after 8 seconds.');
+            return NextResponse.json({ error: 'Target Server Timeout (8s)' }, { status: 504 });
+        }
+        console.log('[Proxy Error] Exception:', error.message);
+        return NextResponse.json({ error: 'Internal Proxy Error', details: error.message }, { status: 500 });
     }
 }
