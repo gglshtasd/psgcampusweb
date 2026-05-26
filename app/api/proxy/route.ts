@@ -1,109 +1,145 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'edge';
 
-export async function POST(request: Request) {
-    console.log('[Universal Proxy - Step 1] Request received');
+export async function POST(request: NextRequest) {
     try {
-        // Parse the incoming request payload from your Next.js frontend
-        const reqBody = await request.json();
-        const { endpoint, method = 'GET', body, accessToken, sessionCookies } = reqBody;
+        const body = await request.json();
+        const username = body.username;
+        const password = body.password;
 
-        console.log(`[Universal Proxy - Step 2] Parsing payload: Endpoint=${endpoint}, Method=${method}`);
-
-        // Validate required fields
-        if (!endpoint || !accessToken) {
-            console.log('[Universal Proxy - Error] Missing required fields (endpoint or accessToken)');
-            return NextResponse.json(
-                { error: 'Missing endpoint or accessToken' }, 
-                { status: 400 }
-            );
+        if (!username || !password) {
+            return NextResponse.json({ error: 'Username and password are required' }, { status: 400 });
         }
 
-        // ==========================================
-        // JWT DEBUGGER LOGGING
-        // ==========================================
-        try {
-            const payloadBase64 = accessToken.split('.')[1];
-            // Fix base64 formatting before decoding in edge
-            const base64 = payloadBase64.replace(/-/g, '+').replace(/_/g, '/');
-            const decodedPayload = JSON.parse(atob(base64));
-            console.log('[Universal Proxy - JWT Debug] Decoded Token Info:', JSON.stringify({
-                preferred_username: decodedPayload.preferred_username,
-                realm_access: decodedPayload.realm_access,
-                resource_access: decodedPayload.resource_access
-            }, null, 2));
-        } catch (e) {
-            console.log('[Universal Proxy - JWT Debug] Failed to parse JWT payload.');
-        }
+        console.log(`[Auth API - Step 1] Initiating login for user: ${username}`);
 
-        // Construct the target URL safely
-        const baseUrl = 'https://laudea.psgcas.ac.in';
-        const targetUrl = endpoint.startsWith('/') ? `${baseUrl}${endpoint}` : `${baseUrl}/${endpoint}`;
+        // Step 1: Initial Keycloak request
+        const redirectUri = "https://laudea.psgcas.ac.in/";
+        const loginUrl = `https://accounts.psgcas.ac.in/realms/ies/protocol/openid-connect/auth?client_id=laudea&redirect_uri=${encodeURIComponent(redirectUri)}&response_mode=fragment&response_type=code&scope=openid`;
         
-        console.log(`[Universal Proxy - Step 3] Forwarding request to: ${targetUrl}`);
+        console.log('[Auth API - Step 2] Fetching initial Keycloak login page...');
+        const initialRes = await fetch(loginUrl, { 
+            method: 'GET',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Cache-Control': 'no-cache, no-store' // Failsafe: Bypass Edge Cache
+            }
+        });
+        
+        const initialCookies = initialRes.headers.get('set-cookie') || '';
+        const html = await initialRes.text();
 
-        // Construct strict headers. We mimic a real Angular browser request to avoid 403 CSRF blocks
-        const headers = new Headers({
-            'Authorization': `Bearer ${accessToken}`,
-            'Accept': 'application/json, text/plain, */*',
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-            'Connection': 'keep-alive',
-            'Origin': 'https://laudea.psgcas.ac.in',
-            'Referer': 'https://laudea.psgcas.ac.in/',
-            'X-Requested-With': 'XMLHttpRequest'
+        // Step 2: Scrape dynamic form action
+        const actionMatch = html.match(/action="(https:\/\/accounts\.psgcas\.ac\.in\/realms\/ies\/login-actions\/authenticate[^"]+)"/);
+        if (!actionMatch) {
+            console.error('[Auth API - Error] Failed to find form action URL. Page might be cached or layout changed.');
+            return NextResponse.json({ error: 'Failed to parse login page' }, { status: 500 });
+        }
+        
+        const postUrl = actionMatch[1].replace(/&amp;/g, '&');
+        
+        const formData = new URLSearchParams();
+        formData.append('username', username);
+        formData.append('password', password);
+        formData.append('login', 'Log in');
+
+        // Step 3: Submit credentials
+        console.log('[Auth API - Step 3] Sending POST request with credentials...');
+        const authRes = await fetch(postUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Cookie': initialCookies,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Origin': 'https://accounts.psgcas.ac.in',
+                'Referer': loginUrl
+            },
+            body: formData.toString(),
+            redirect: 'manual' 
         });
 
-        // Inject the Keycloak Session Cookies if we have them
-        if (sessionCookies) {
-            headers.set('Cookie', sessionCookies);
-            console.log('[Universal Proxy - Step 3.5] Successfully injected Session Cookies into headers');
-        } else {
-            console.log('[Universal Proxy - Warning] No Session Cookies provided. Request might fail if state is strictly checked.');
+        if (authRes.status !== 302 && authRes.status !== 303) {
+            console.error(`[Auth API - Error] Login failed. Status: ${authRes.status}`);
+            return NextResponse.json({ error: 'Invalid credentials or login failed' }, { status: 401 });
         }
 
-        const fetchOptions: RequestInit = {
-            method,
-            headers,
-            redirect: 'manual', // Prevent getting lost in unexpected auth redirects
-        };
+        const location = authRes.headers.get('location') || '';
+        const authCookies = authRes.headers.get('set-cookie') || '';
+        console.log('[Auth API - Step 4] Intercepted OIDC Redirect.');
 
-        // Attach body ONLY if the method requires it
-        if (method !== 'GET' && method !== 'HEAD' && body) {
-            fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
-            console.log('[Universal Proxy - Step 3.6] Attached request body to fetch options');
+        // Step 4: Extract the 'code'
+        const codeMatch = location.match(/[#&?]code=([^&]+)/);
+        if (!codeMatch) {
+            console.error('[Auth API - Error] No OIDC code found in redirect location.');
+            return NextResponse.json({ error: 'OIDC flow failed: Missing code' }, { status: 500 });
         }
-
-        // Execute the server-to-server request
-        console.log('[Universal Proxy - Step 4] Executing fetch to target server');
-        const response = await fetch(targetUrl, fetchOptions);
-
-        console.log(`[Universal Proxy - Step 5] Target responded with Status ${response.status} ${response.statusText}`);
-
-        // Handle the response safely (it might not be JSON)
-        const responseText = await response.text();
-        let responseData;
+        const oidcCode = codeMatch[1];
         
-        try {
-            responseData = JSON.parse(responseText);
-            console.log('[Universal Proxy - Step 6] Successfully parsed JSON response from target');
-        } catch (e) {
-            console.log('[Universal Proxy - Step 6] Response is not JSON. Returning raw text.');
-            responseData = responseText;
-        }
+        // Step 5: Primary Token Exchange (Laudea)
+        console.log('[Auth API - Step 5] Exchanging Code for Primary Token (laudea)...');
+        const tokenUrl = "https://accounts.psgcas.ac.in/realms/ies/protocol/openid-connect/token";
+        
+        const tokenFormData = new URLSearchParams();
+        tokenFormData.append('grant_type', 'authorization_code');
+        tokenFormData.append('client_id', 'laudea');
+        tokenFormData.append('redirect_uri', redirectUri);
+        tokenFormData.append('code', oidcCode);
 
-        // Pass the target server's exact data back to our UI
-        return NextResponse.json({
-            status: response.status,
-            data: responseData
+        const tokenRes = await fetch(tokenUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Cookie': authCookies || initialCookies,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            },
+            body: tokenFormData.toString()
         });
 
-    } catch (error: any) {
-        console.log('[Universal Proxy - Fatal Error] Exception caught:', error.message);
-        return NextResponse.json(
-            { error: 'Internal Server Error', details: error.message }, 
-            { status: 500 }
-        );
+        if (!tokenRes.ok) {
+            return NextResponse.json({ error: 'Failed to exchange primary token' }, { status: 502 });
+        }
+
+        const primaryTokenData = await tokenRes.json();
+        
+        // Step 6: Secondary Token Exchange (IES_SIS) via Refresh Flow - THIS TESTS HYPOTHESIS C
+        console.log('[Auth API - Step 6] Swapping Refresh Token for SIS Token (ies_sis)...');
+        const sisFormData = new URLSearchParams();
+        sisFormData.append('grant_type', 'refresh_token');
+        sisFormData.append('client_id', 'ies_sis');
+        sisFormData.append('refresh_token', primaryTokenData.refresh_token);
+
+        let sisTokenData = null;
+        try {
+            const sisRes = await fetch(tokenUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Cookie': authCookies || initialCookies,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                },
+                body: sisFormData.toString()
+            });
+            if (sisRes.ok) {
+                sisTokenData = await sisRes.json();
+                console.log('[Auth API - Step 6] Successfully acquired SIS Token.');
+            } else {
+                console.warn('[Auth API - Step 6] Failed to acquire SIS Token, proceeding with Laudea token only.');
+            }
+        } catch (e) {
+            console.warn('[Auth API - Error] SIS token swap threw an exception.');
+        }
+
+        return NextResponse.json({ 
+            success: true, 
+            laudeaToken: primaryTokenData.access_token,
+            sisToken: sisTokenData ? sisTokenData.access_token : null,
+            sessionCookies: authCookies || initialCookies
+        }, { status: 200 });
+
+    } catch (error) {
+        console.error('[Auth API - Fatal Error]', error);
+        return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
     }
 }
