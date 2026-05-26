@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const runtime = 'edge';
+
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
@@ -21,7 +23,8 @@ export async function POST(request: NextRequest) {
             method: 'GET',
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Cache-Control': 'no-cache, no-store' // Failsafe: Bypass Edge Cache
             }
         });
         
@@ -31,7 +34,7 @@ export async function POST(request: NextRequest) {
         // Step 2: Scrape dynamic form action
         const actionMatch = html.match(/action="(https:\/\/accounts\.psgcas\.ac\.in\/realms\/ies\/login-actions\/authenticate[^"]+)"/);
         if (!actionMatch) {
-            console.error('[Auth API - Error] Failed to find form action URL.');
+            console.error('[Auth API - Error] Failed to find form action URL. Page might be cached or layout changed.');
             return NextResponse.json({ error: 'Failed to parse login page' }, { status: 500 });
         }
         
@@ -66,17 +69,16 @@ export async function POST(request: NextRequest) {
         const authCookies = authRes.headers.get('set-cookie') || '';
         console.log('[Auth API - Step 4] Intercepted OIDC Redirect.');
 
-        // Step 4: Extract the 'code' from the location fragment (#code=...)
+        // Step 4: Extract the 'code'
         const codeMatch = location.match(/[#&?]code=([^&]+)/);
         if (!codeMatch) {
             console.error('[Auth API - Error] No OIDC code found in redirect location.');
             return NextResponse.json({ error: 'OIDC flow failed: Missing code' }, { status: 500 });
         }
         const oidcCode = codeMatch[1];
-        console.log('[Auth API - Step 5] Extracted OIDC Authorization Code.');
-
-        // Step 5: Token Exchange (The Handshake)
-        console.log('[Auth API - Step 6] Exchanging Code for Access Token...');
+        
+        // Step 5: Primary Token Exchange (Laudea)
+        console.log('[Auth API - Step 5] Exchanging Code for Primary Token (laudea)...');
         const tokenUrl = "https://accounts.psgcas.ac.in/realms/ies/protocol/openid-connect/token";
         
         const tokenFormData = new URLSearchParams();
@@ -89,30 +91,51 @@ export async function POST(request: NextRequest) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
-                // Sometimes Keycloak requires the session cookies for token exchange
                 'Cookie': authCookies || initialCookies,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             },
             body: tokenFormData.toString()
         });
 
         if (!tokenRes.ok) {
-            const errorText = await tokenRes.text();
-            console.error(`[Auth API - Error] Token exchange failed. Status: ${tokenRes.status}`, errorText);
-            return NextResponse.json({ error: 'Failed to exchange token' }, { status: 502 });
+            return NextResponse.json({ error: 'Failed to exchange primary token' }, { status: 502 });
         }
 
-        const tokenData = await tokenRes.json();
-        console.log('[Auth API - Step 7] Token Exchange SUCCESS!');
+        const primaryTokenData = await tokenRes.json();
+        
+        // Step 6: Secondary Token Exchange (IES_SIS) via Refresh Flow - THIS TESTS HYPOTHESIS C
+        console.log('[Auth API - Step 6] Swapping Refresh Token for SIS Token (ies_sis)...');
+        const sisFormData = new URLSearchParams();
+        sisFormData.append('grant_type', 'refresh_token');
+        sisFormData.append('client_id', 'ies_sis');
+        sisFormData.append('refresh_token', primaryTokenData.refresh_token);
 
-        // Return the master tokens to the client
+        let sisTokenData = null;
+        try {
+            const sisRes = await fetch(tokenUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Cookie': authCookies || initialCookies,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                },
+                body: sisFormData.toString()
+            });
+            if (sisRes.ok) {
+                sisTokenData = await sisRes.json();
+                console.log('[Auth API - Step 6] Successfully acquired SIS Token.');
+            } else {
+                console.warn('[Auth API - Step 6] Failed to acquire SIS Token, proceeding with Laudea token only.');
+            }
+        } catch (e) {
+            console.warn('[Auth API - Error] SIS token swap threw an exception.');
+        }
+
         return NextResponse.json({ 
             success: true, 
-            message: "Authentication and Token Exchange successful",
-            accessToken: tokenData.access_token,
-            refreshToken: tokenData.refresh_token,
-            expiresIn: tokenData.expires_in,
-            sessionCookies: authCookies // Passing these just in case we need them later
+            laudeaToken: primaryTokenData.access_token,
+            sisToken: sisTokenData ? sisTokenData.access_token : null,
+            sessionCookies: authCookies || initialCookies
         }, { status: 200 });
 
     } catch (error) {
