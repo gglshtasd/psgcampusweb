@@ -11,18 +11,10 @@ export default function Home() {
   const [accessToken, setAccessToken] = useState('');
 
   // --- App State ---
-  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, profile, attendance, marks
-  const [apiData, setApiData] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [tabData, setTabData] = useState<any>(null);
   const [loadingData, setLoadingData] = useState(false);
-
-  // --- Mocked Profile Data (Until we find the true endpoint) ---
-  const mockProfile = {
-    name: "MOHAMED KASSIM S",
-    roll: username.toUpperCase(),
-    degree: "B.Com (Professional Accounting)",
-    email: "mohamedkassimsarbudeen@gmail.com",
-    completion: 87
-  };
+  const [dataError, setDataError] = useState('');
 
   // --- Handler: Login Flow ---
   const handleLogin = async (e: React.FormEvent) => {
@@ -45,8 +37,8 @@ export default function Home() {
       console.log('[UI - Auth] Success! JWT stored.');
       setAccessToken(data.accessToken);
       
-      // Auto-fetch dashboard apps on login
-      fetchDashboardApps(data.accessToken);
+      // Default to loading profile first to get the user's name
+      fetchTabData('profile', `/sis/students/${username.toUpperCase()}`);
     } catch (err: any) {
       setAuthError(err.message);
     } finally {
@@ -54,19 +46,28 @@ export default function Home() {
     }
   };
 
-  // --- Handler: Fetch Dashboard Menu (The one API we know works) ---
-  const fetchDashboardApps = async (token: string) => {
+  // --- Handler: Fetch Dynamic Tab Data ---
+  const fetchTabData = async (tabName: string, endpoint: string, method: string = 'GET', body?: any) => {
+    setActiveTab(tabName);
     setLoadingData(true);
+    setDataError('');
+    setTabData(null);
+
     try {
+      console.log(`[UI - Data] Fetching ${endpoint}...`);
       const res = await fetch('/api/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoint: '/featureFlags/dashboardMenu', method: 'GET', accessToken: token })
+        body: JSON.stringify({ endpoint, method, body, accessToken })
       });
+      
       const json = await res.json();
-      if (res.ok) setApiData(json.data);
-    } catch (err) {
-      console.error("Failed to fetch dashboard apps", err);
+      if (!res.ok) throw new Error(json.error || `Failed to fetch ${tabName}`);
+      
+      setTabData(json.data);
+    } catch (err: any) {
+      console.error(`[UI - Data Error]`, err);
+      setDataError(err.message);
     } finally {
       setLoadingData(false);
     }
@@ -76,31 +77,31 @@ export default function Home() {
     setAccessToken('');
     setUsername('');
     setPassword('');
-    setApiData(null);
+    setTabData(null);
+    setActiveTab('dashboard');
   };
 
   // ==========================================
   // COMPONENT: SIDEBAR NAVIGATION
-  // Built using the AngularJS routing schema provided
   // ==========================================
   const Sidebar = () => (
     <div style={{ width: '250px', background: '#111827', color: '#fff', minHeight: '100vh', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       <div>
         <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 'bold', letterSpacing: '1px' }}>PSG GATEWAY</h2>
-        <p style={{ margin: '0.25rem 0 0 0', color: '#9ca3af', fontSize: '0.75rem' }}>Lightning Fast Wrapper</p>
+        <p style={{ margin: '0.25rem 0 0 0', color: '#9ca3af', fontSize: '0.75rem' }}>Secure Portal Wrapper</p>
       </div>
 
       <nav style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         <p style={{ color: '#6b7280', fontSize: '0.75rem', fontWeight: 'bold', margin: '0 0 0.5rem 0', textTransform: 'uppercase' }}>Core</p>
-        <button onClick={() => setActiveTab('dashboard')} style={navBtnStyle(activeTab === 'dashboard')}>Dashboard</button>
-        <button onClick={() => setActiveTab('profile')} style={navBtnStyle(activeTab === 'profile')}>My Profile</button>
+        <button onClick={() => fetchTabData('dashboard', '/featureFlags/dashboardMenu')} style={navBtnStyle(activeTab === 'dashboard')}>Dashboard</button>
+        <button onClick={() => fetchTabData('profile', `/sis/students/${username.toUpperCase()}`)} style={navBtnStyle(activeTab === 'profile')}>My Profile</button>
         
         <p style={{ color: '#6b7280', fontSize: '0.75rem', fontWeight: 'bold', margin: '1.5rem 0 0.5rem 0', textTransform: 'uppercase' }}>Academics</p>
-        <button onClick={() => setActiveTab('attendance')} style={navBtnStyle(activeTab === 'attendance')}>Attendance</button>
+        <button onClick={() => fetchTabData('attendance', `/sis/attendance/old/${username.toUpperCase()}`)} style={navBtnStyle(activeTab === 'attendance')}>Attendance</button>
         <button onClick={() => setActiveTab('timetable')} style={navBtnStyle(activeTab === 'timetable')}>Time Table</button>
         
         <p style={{ color: '#6b7280', fontSize: '0.75rem', fontWeight: 'bold', margin: '1.5rem 0 0.5rem 0', textTransform: 'uppercase' }}>Exams</p>
-        <button onClick={() => setActiveTab('camarks')} style={navBtnStyle(activeTab === 'camarks')}>CA Marks</button>
+        <button onClick={() => fetchTabData('camarks', `/sis/ca/marks/${username.toUpperCase()}`)} style={navBtnStyle(activeTab === 'camarks')}>CA Marks</button>
         <button onClick={() => setActiveTab('results')} style={navBtnStyle(activeTab === 'results')}>Results</button>
       </nav>
 
@@ -113,72 +114,139 @@ export default function Home() {
   );
 
   const navBtnStyle = (isActive: boolean) => ({
-    background: isActive ? '#374151' : 'transparent',
-    color: isActive ? '#fff' : '#d1d5db',
-    border: 'none',
-    padding: '0.75rem 1rem',
-    borderRadius: '6px',
-    textAlign: 'left' as const,
-    cursor: 'pointer',
-    fontSize: '0.9rem',
-    fontWeight: isActive ? '600' : '400',
-    transition: 'background 0.2s'
+    background: isActive ? '#374151' : 'transparent', color: isActive ? '#fff' : '#d1d5db',
+    border: 'none', padding: '0.75rem 1rem', borderRadius: '6px', textAlign: 'left' as const,
+    cursor: 'pointer', fontSize: '0.9rem', fontWeight: isActive ? '600' : '400', transition: 'background 0.2s'
   });
 
   // ==========================================
-  // VIEW: AUTHENTICATED DASHBOARD
+  // VIEW RENDERERS
+  // ==========================================
+  const renderProfile = () => {
+    if (!tabData) return null;
+    return (
+      <div style={{ background: '#fff', padding: '2rem', borderRadius: '12px', border: '1px solid #e5e7eb' }}>
+        <h2 style={{ marginTop: 0, borderBottom: '1px solid #eee', paddingBottom: '1rem' }}>Academic Profile</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginTop: '1.5rem' }}>
+          <div><strong style={{ color: '#6b7280', fontSize: '0.85rem' }}>FULL NAME</strong><p style={{ margin: '0.25rem 0', fontSize: '1.1rem' }}>{tabData.studentName || 'N/A'}</p></div>
+          <div><strong style={{ color: '#6b7280', fontSize: '0.85rem' }}>ROLL NUMBER</strong><p style={{ margin: '0.25rem 0', fontSize: '1.1rem' }}>{tabData.rollNumber || username}</p></div>
+          <div><strong style={{ color: '#6b7280', fontSize: '0.85rem' }}>PROGRAMME</strong><p style={{ margin: '0.25rem 0', fontSize: '1.1rem' }}>{tabData.programmeName || 'N/A'}</p></div>
+          <div><strong style={{ color: '#6b7280', fontSize: '0.85rem' }}>BATCH YEAR</strong><p style={{ margin: '0.25rem 0', fontSize: '1.1rem' }}>{tabData.batchYear || 'N/A'}</p></div>
+          <div><strong style={{ color: '#6b7280', fontSize: '0.85rem' }}>EMAIL</strong><p style={{ margin: '0.25rem 0', fontSize: '1.1rem' }}>{tabData.emailId || 'N/A'}</p></div>
+          <div><strong style={{ color: '#6b7280', fontSize: '0.85rem' }}>SECTION</strong><p style={{ margin: '0.25rem 0', fontSize: '1.1rem' }}>{tabData.section || 'N/A'}</p></div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAttendance = () => {
+    if (!tabData) return null;
+    return (
+      <div style={{ display: 'flex', gap: '1.5rem' }}>
+        <div style={{ flex: 1, background: '#fff', padding: '2rem', borderRadius: '12px', border: '1px solid #e5e7eb', textAlign: 'center' }}>
+          <h3 style={{ margin: '0 0 1rem 0', color: '#6b7280' }}>Overall Attendance</h3>
+          <div style={{ fontSize: '3rem', fontWeight: 'bold', color: tabData.netPresentPercentage > 75 ? '#16a34a' : '#dc2626' }}>
+            {tabData.netPresentPercentage || 0}%
+          </div>
+        </div>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div style={{ background: '#fff', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ fontWeight: 'bold', color: '#374151' }}>Days Present</span>
+            <span style={{ color: '#16a34a', fontWeight: 'bold' }}>{tabData.present || 0}</span>
+          </div>
+          <div style={{ background: '#fff', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ fontWeight: 'bold', color: '#374151' }}>Days Absent</span>
+            <span style={{ color: '#dc2626', fontWeight: 'bold' }}>{tabData.absent || 0}</span>
+          </div>
+          <div style={{ background: '#fff', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ fontWeight: 'bold', color: '#374151' }}>Total Working Days</span>
+            <span style={{ color: '#4b5563', fontWeight: 'bold' }}>{tabData.workingDaysTillToday || 0}</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderCAMarks = () => {
+    if (!Array.isArray(tabData)) return <p>No marks data available.</p>;
+    return (
+      <div style={{ background: '#fff', borderRadius: '12px', border: '1px solid #e5e7eb', overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+          <thead style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+            <tr>
+              <th style={{ padding: '1rem', fontSize: '0.85rem', color: '#6b7280' }}>COURSE CODE</th>
+              <th style={{ padding: '1rem', fontSize: '0.85rem', color: '#6b7280' }}>SUBJECT NAME</th>
+              <th style={{ padding: '1rem', fontSize: '0.85rem', color: '#6b7280' }}>MARKS OBTAINED</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tabData.map((course: any, i: number) => (
+              <tr key={i} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                <td style={{ padding: '1rem', fontWeight: '500', color: '#374151' }}>{course.courseCode || 'N/A'}</td>
+                <td style={{ padding: '1rem', color: '#4b5563' }}>{course.courseName || 'Unknown Subject'}</td>
+                <td style={{ padding: '1rem' }}>
+                  {course.testDetails && course.testDetails.length > 0 
+                    ? course.testDetails.map((t:any) => `${t.testName}: ${t.marksSecured}/${t.maxMarks}`).join(' | ') 
+                    : <span style={{ color: '#9ca3af' }}>Not Uploaded</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  const renderDashboardApps = () => {
+    if (!Array.isArray(tabData)) return null;
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1rem' }}>
+        {tabData.filter(app => app.isDisplay).map((app, i) => (
+          <div key={i} style={{ background: '#fff', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <div style={{ width: '40px', height: '40px', background: '#f3f4f6', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem' }}>
+              {app.name.includes('Student') ? '👨‍🎓' : app.name.includes('Exam') ? '📝' : app.name.includes('Fees') ? '💳' : '📁'}
+            </div>
+            <div>
+              <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#111827' }}>{app.name}</h3>
+              <p style={{ margin: 0, fontSize: '0.75rem', color: '#6b7280' }}>{app.link}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // ==========================================
+  // VIEW: AUTHENTICATED WRAPPER
   // ==========================================
   if (accessToken) {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: '#f3f4f6', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
         <Sidebar />
-        
         <main style={{ flex: 1, padding: '2rem 3rem', overflowY: 'auto' }}>
-          {/* Top Profile Header */}
-          <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fff', padding: '1.5rem 2rem', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '2rem' }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: '1.5rem', color: '#111827' }}>Welcome back, {mockProfile.name}</h1>
-              <p style={{ margin: '0.25rem 0 0 0', color: '#6b7280', fontSize: '0.95rem' }}>{mockProfile.roll} • {mockProfile.degree}</p>
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ display: 'inline-block', padding: '0.5rem 1rem', background: '#dcfce7', color: '#166534', borderRadius: '999px', fontSize: '0.85rem', fontWeight: 'bold' }}>
-                Profile: {mockProfile.completion}% Complete
-              </div>
-            </div>
+          <header style={{ marginBottom: '2rem' }}>
+            <h1 style={{ margin: 0, fontSize: '1.75rem', color: '#111827', textTransform: 'capitalize' }}>
+              {activeTab.replace(/([A-Z])/g, ' $1').trim()}
+            </h1>
           </header>
 
-          {/* Dynamic Content Area */}
-          {activeTab === 'dashboard' && (
+          {loadingData ? (
+            <div style={{ color: '#3b82f6', fontWeight: '500' }}>Fetching live data...</div>
+          ) : dataError ? (
+            <div style={{ background: '#fef2f2', color: '#dc2626', padding: '1rem', borderRadius: '8px', border: '1px solid #fecaca' }}>{dataError}</div>
+          ) : (
             <div>
-              <h2 style={{ fontSize: '1.25rem', color: '#374151', marginBottom: '1rem' }}>Connected Applications</h2>
-              {loadingData ? <p>Syncing apps...</p> : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1rem' }}>
-                  {Array.isArray(apiData) && apiData.filter(app => app.isDisplay).map((app, i) => (
-                    <div key={i} style={{ background: '#fff', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', gap: '1rem', cursor: 'pointer', transition: 'transform 0.1s' }} onMouseOver={e => e.currentTarget.style.transform = 'translateY(-2px)'} onMouseOut={e => e.currentTarget.style.transform = 'translateY(0)'}>
-                      <div style={{ width: '40px', height: '40px', background: '#f3f4f6', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem' }}>
-                        {app.name.includes('Student') ? '👨‍🎓' : app.name.includes('Exam') ? '📝' : app.name.includes('Fees') ? '💳' : '📁'}
-                      </div>
-                      <div>
-                        <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#111827' }}>{app.name}</h3>
-                        <p style={{ margin: 0, fontSize: '0.75rem', color: '#6b7280' }}>{app.link}</p>
-                      </div>
-                    </div>
-                  ))}
+              {activeTab === 'profile' && renderProfile()}
+              {activeTab === 'attendance' && renderAttendance()}
+              {activeTab === 'camarks' && renderCAMarks()}
+              {activeTab === 'dashboard' && renderDashboardApps()}
+              {(activeTab === 'timetable' || activeTab === 'results') && (
+                <div style={{ background: '#fff', padding: '3rem', borderRadius: '12px', border: '1px solid #e5e7eb', textAlign: 'center' }}>
+                  <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🚧</div>
+                  <h2>Under Construction</h2>
+                  <p>We need to map the endpoints for this module next.</p>
                 </div>
               )}
-            </div>
-          )}
-
-          {(activeTab === 'attendance' || activeTab === 'camarks' || activeTab === 'results' || activeTab === 'timetable' || activeTab === 'profile') && (
-            <div style={{ background: '#fff', padding: '3rem', borderRadius: '12px', border: '1px solid #e5e7eb', textAlign: 'center' }}>
-              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🚧</div>
-              <h2 style={{ margin: '0 0 0.5rem 0', color: '#111827' }}>Awaiting API Endpoint</h2>
-              <p style={{ color: '#6b7280', maxWidth: '500px', margin: '0 auto' }}>
-                We know the AngularJS route for this is <code>#!/{activeTab}</code>, but we need the actual backend data URL. 
-              </p>
-              <div style={{ marginTop: '2rem', padding: '1rem', background: '#fef3c7', color: '#92400e', borderRadius: '8px', fontSize: '0.9rem', textAlign: 'left', maxWidth: '600px', margin: '2rem auto 0 auto' }}>
-                <strong>Next Step:</strong> Open the original college portal, press F12 (Network Tab), select "Fetch/XHR", and click the "{activeTab}" button. Copy the URL of the API request it makes!
-              </div>
             </div>
           )}
         </main>
